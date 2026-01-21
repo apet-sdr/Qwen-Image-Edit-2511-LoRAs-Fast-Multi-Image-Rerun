@@ -1,0 +1,108 @@
+name: Python Package using Conda
+
+on: [push]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 5
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+    - name: Add conda to system path
+      run: |
+        # $CONDA is an environment variable pointing to the root of the miniconda directory
+        echo $CONDA/bin >> $GITHUB_PATH
+    - name: Install dependencies
+      run: |
+        conda env update --file environment.yml --name base
+    - name: Lint with flake8
+      run: |
+        conda install flake8
+        # stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    - name: Test with pytest
+      run: |
+        conda install pytest
+        pytest
+        from transformers import pipeline
+import torch
+from PIL import Image
+from diffusers import QwenImageEditPlusPipeline   # or QwenImageEditPipeline if using older variant
+from diffusers.utils import load_image
+
+# ── Config ────────────────────────────────────────────────────────────────
+model_id = "Qwen/Qwen-Image-Edit-2511"          # base model (~20–40 GB download first time)
+lora_repo = None                                # e.g. "prithivMLmods/Qwen-Image-Edit-2511-Unblur-Upscale" or None
+lora_weight_name = None                         # e.g. "adapter_model.safetensors" — check repo
+torch_dtype = torch.bfloat16                    # or torch.float16 on weaker GPUs
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+# Optional: 4-bit quantization to reduce VRAM (~12–16 GB instead of 40+ GB)
+# Uncomment if you have bitsandbytes installed and want lower memory
+# from diffusers import BitsAndBytesConfig
+# quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+
+# ── Load pipeline ─────────────────────────────────────────────────────────
+pipe = QwenImageEditPlusPipeline.from_pretrained(
+    model_id,
+    torch_dtype=torch_dtype,
+    # quantization_config=quantization_config,  # uncomment for 4-bit
+    variant="fp16" if torch_dtype == torch.float16 else None,  # if available
+)
+
+pipe.to(device)
+
+# Optional: load a LoRA adapter (lazy like the Space)
+if lora_repo:
+    pipe.load_lora_weights(
+        lora_repo,
+        weight_name=lora_weight_name,          # sometimes needed if not default
+        adapter_name="style_lora"              # arbitrary name
+    )
+    # Activate specific LoRA (you can switch between multiple)
+    pipe.set_adapters(["style_lora"], adapter_weights=[0.8])  # strength 0.0–1.0
+
+# Optional speedup tricks (if you have Lightning LoRA or similar)
+# pipe.load_lora_weights("lightx2v/Qwen-Image-Lightning", weight_name="Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors")
+# pipe.fuse_lora()   # fuse for slightly faster inference
+
+pipe.enable_model_cpu_offload()   # huge help if VRAM is limited — moves parts to CPU/RAM
+
+# ── Run inference ─────────────────────────────────────────────────────────
+input_image_path = "your_input_photo.jpg"           # replace with your file
+init_image = load_image(input_image_path).convert("RGB")
+
+prompt = "Convert this photo to anime style, vibrant colors, detailed background"
+negative_prompt = "blurry, low quality, artifacts, text, watermark"
+
+edited_image = pipe(
+    image=init_image,
+    prompt=prompt,
+    negative_prompt=negative_prompt,
+    num_inference_steps=30,          # 20–50 typical; 4–8 with Lightning LoRA
+    guidance_scale=5.0,              # 3–7 common for editing
+    strength=0.75,                   # how much to change the input (0.6–0.9 good balance)
+    generator=torch.Generator(device=device).manual_seed(42),
+).images[0]
+
+# Save result
+edited_image.save("edited_output.png")
+print("Done! Check edited_output.png")
+# Use a very small modelpip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121   # for NVIDIA; use nightly for Apple Silicon MPS
+pip install --upgrade git+https://github.com/huggingface/diffusers
+pip install transformers accelerate pillow
+# Optional for 4-bit: pip install bitsandbytes
+classifier = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+print(classifier("I love running models on my phone!"))
+git clone https://github.com/PRITHIVSAKTHIUR/Qwen-Image-Edit-2511-LoRAs-Fast-Multi-Image-Rerun
+cd Qwen-Image-Edit-2511-LoRAs-Fast-Multi-Image-Rerun
+pip install -r requirements.txt   # or just pip install gradio diffusers torch accelerate transformers
+python app.py
